@@ -119,14 +119,15 @@ func (lfs *localFileStorage) GetClient(ctx context.Context, kind component.Kind,
 // When Recreate is enabled and the database file already exists, corruption
 // recovery is performed in two layers:
 //
-//  1. Subprocess pre-check: catches panics raised inside goroutines spawned by
-//     bbolt.Open (e.g. the freepages "multiple references" panic), which the
-//     in-process defer/recover below cannot catch because Go's recover() only
-//     catches panics in its own goroutine.
-//  2. In-process defer/recover around bbolt.Open: catches panics raised in the
-//     main goroutine (e.g. freepages' "failed to open read only tx" or "failed
-//     to rollback tx" panics, or panics from tx.recursivelyCheckBucket itself
-//     prior to the spawned goroutine reading from the error channel).
+//  1. In-process pre-check: opens the file with bbolt's read-only fast path
+//     (no freelist load) and runs (*bbolt.Tx).Check to walk the bucket tree.
+//     Tx.Check forwards consistency errors (including the "freepages: multiple
+//     references" case that bbolt raises from a spawned goroutine in write
+//     mode) through a channel under its own recover() wrapper, so they arrive
+//     here as regular Go errors rather than process-killing panics.
+//  2. In-process defer/recover around bbolt.Open: safety net for any panic
+//     that escapes the normal open path (e.g. main-goroutine panics in
+//     bbolt that the pre-check does not exercise).
 //
 // On either signal of corruption, the file is renamed aside and a fresh
 // database is opened in its place.
@@ -136,7 +137,7 @@ func (lfs *localFileStorage) openClient(ctx context.Context, absoluteName string
 			precheckErr := lfs.precheckFn(ctx, absoluteName, lfs.cfg.Timeout)
 			switch {
 			case precheckErr == nil:
-				// Database opened cleanly in the subprocess; safe to open here.
+				// Database passed the in-process consistency check; safe to open normally.
 			case errors.Is(precheckErr, errDBCorruption):
 				if renameErr := lfs.renameCorruptDB(absoluteName); renameErr != nil {
 					return nil, renameErr

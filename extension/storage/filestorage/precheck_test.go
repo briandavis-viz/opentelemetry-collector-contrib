@@ -195,11 +195,7 @@ func TestOpenClient_RecreateEnabled_PrecheckTransientError_DoesNotRename(t *test
 		"expected log entry about transient precheck error")
 }
 
-func TestRunPrecheck_RealSubprocess_OnCleanDatabase(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping subprocess test in short mode")
-	}
-
+func TestRunPrecheck_CleanDatabase_ReturnsNil(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "clean.bbolt")
 	require.NoError(t, seedBboltFile(dbPath))
@@ -211,19 +207,29 @@ func TestRunPrecheck_RealSubprocess_OnCleanDatabase(t *testing.T) {
 		"precheck on a healthy bbolt file should return nil")
 }
 
-func TestRunPrecheck_RealSubprocess_OnMissingFile(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping subprocess test in short mode")
-	}
-
+func TestRunPrecheck_MissingFile_ReturnsNil(t *testing.T) {
 	tempDir := t.TempDir()
 	missingPath := filepath.Join(tempDir, "does-not-exist.bbolt")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	// bbolt.Open creates the file when it does not exist, so this should succeed.
-	require.NoError(t, runPrecheck(ctx, missingPath, time.Second))
+	require.NoError(t, runPrecheck(ctx, missingPath, time.Second),
+		"precheck on a non-existent file is a no-op")
+}
+
+func TestRunPrecheck_CancelledContext_ReturnsContextError(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "ctx.bbolt")
+	require.NoError(t, seedBboltFile(dbPath))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := runPrecheck(ctx, dbPath, time.Second)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, errDBCorruption,
+		"a cancelled context must not be misclassified as corruption")
 }
 
 func TestExtensionRecreate_FactoryWiresPrecheck(t *testing.T) {
